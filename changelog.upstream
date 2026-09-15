@@ -1,3 +1,67 @@
+commit 4f4a7ec1509d958f98d407537828c01dd0ef44fe
+Merge: 5bfe462 d1b75ed
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Mon Sep 14 02:38:12 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit d1b75edb5fae14482b40b537456c96a4e69c2326
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Sun Sep 13 18:36:00 2026 -0400
+
+    Move privleap configuration to non-conffile location
+
+commit 5bfe46294b6af96b48f9c5764e4541b07f3e2e8c
+Merge: 64775fd 52815c4
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sat Sep 12 09:53:49 2026 -0400
+
+    Merge remote-tracking branch 'refs/remotes/ArrayBolt3/arraybolt3/trixie'
+
+commit 52815c4b6ef8ff01e37df592621f5e71cd532bf9
+Merge: 64775fd 6e38f3f
+Author: Aaron Rainbolt <arraybolt3@gmail.com>
+Date:   Fri Sep 11 17:40:01 2026 -0400
+
+    Merge branch 'ai' into arraybolt3/trixie
+
+commit 6e38f3fb24b4638c236b7d7ce429ba13c3151458
+Merge: 612078a 3db0c25
+Author: claude <noreply@anthropic.com>
+Date:   Tue Sep 8 13:36:19 2026 -0400
+
+    Merge branch 'master' into ai
+
+commit 3db0c251dd746c89e54e471a37dbc3167362ed78
+Merge: 64775fd 612078a
+Author: assisted-by-ai (Bot Account) (Machine Account) <228987186+assisted-by-ai@users.noreply.github.com>
+Date:   Mon Sep 7 22:13:18 2026 -0400
+
+    Merge pull request #4 from org-ai-assisted/ai
+
+    rename has.sh -> has.bsh (bashism convention)
+
+commit 612078a94ebaec59b9ff894fbf0a47da4d28c15e
+Author: claude (dev474 c7439536-fad8-4884-b71a-d2f3c4c23905) <noreply@anthropic.com>
+Date:   Mon Sep 7 11:09:04 2026 -0400
+
+    rename has.sh to has.bsh (bashism convention)
+
+    Sourced helper-scripts lib uses bashisms; .bsh marks it. Path-only edit.
+
+commit 5bbe9cf579e76d8888c03d667710e8e7dd734f5f
+Merge: 3a09b53 64775fd
+Author: claude (dev474 c7439536-fad8-4884-b71a-d2f3c4c23905) <noreply@anthropic.com>
+Date:   Mon Sep 7 11:09:04 2026 -0400
+
+    Merge branch 'master' into ai
+
+commit 64775fd9e683ebf9d1df0843448ae24caa6db722
+Author: Patrick Schleizer <adrelanos@whonix.org>
+Date:   Sun Sep 6 17:02:07 2026 +0000
+
+    bumped changelog version
+
 commit 67639b42704cbfc41dedf2f4c4363e07e244f91e
 Merge: f6c5076 42b188e
 Author: Patrick Schleizer <adrelanos@whonix.org>
