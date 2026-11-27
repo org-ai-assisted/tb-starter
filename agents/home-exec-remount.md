@@ -32,8 +32,17 @@ regardless of propagation type.
   both triggers below; no second copy.
 - Non-Qubes and Qubes persistent: `tb-updater`'s PAM session hook
   `usr/libexec/tb-updater/tb-home-remount-exec` (`usr/share/pam-configs/tb-home-exec`,
-  `pam_exec`, priority 95) runs as the login session opens, INSIDE the session's
-  mount namespace, so the remount is visible to the browser by construction.
+  `pam_exec`, priority 95) runs as the login session opens. It acts ONLY when the
+  session's mount namespace is unshared from init (compares `/proc/self/ns/mnt` to
+  `/proc/1/ns/mnt`) -- i.e. pam_namespace has already unshared it earlier in the
+  stack. Then the remount is session-local and visible to the browser. With
+  pam_namespace inactive (shared init namespace) it is a NO-OP, because a remount
+  there would be system-wide and permanent (`pam_exec` close_session does not
+  umount); `tb-starter`'s launch-time `check_noexec` (exit 5) is the fail-safe
+  until pam_namespace lands. The hook pre-creates the browser dirs PRIVILEGE-
+  DROPPED (as the account, via `runuser`), never as root: a root `mkdir --parents`
+  follows a user-planted parent symlink that the final-component `[ -L ]` guard
+  cannot see and cannot win the race against -- a root create+chown LPE.
 - Qubes DispVM: `tb-updater-dispvm.service` runs the DispVM data layout at boot
   (binding the read-only `/var/cache/tb-binary` cache into the home, `/rw/home`),
   using the same shared helper for the exec step. Lives in tb-updater because it
@@ -63,9 +72,15 @@ its privleap action and sudoers grant; `tb-starter` now `Depends` on `tb-updater
 | Account scope | `tb_home_exec_user` (default `user`) | Hardcoded `/home/user/.tb` |
 | Dirs made exec | `~/.tb` and `~/.cache/tb` | `~/.tb` only |
 
-## Caveat still to verify
+## Caveats still to verify
 
-A's PAM hook now also covers Qubes (the `/run/qubes` early-exit was removed).
-Whether `pam_exec` actually fires on a Qubes AppVM login, and runs after the
-DispVM boot-time binds, must be confirmed by a real Qubes AppVM boot test before
-this is relied on there.
+- A's PAM hook now also covers Qubes (the `/run/qubes` early-exit was removed).
+  Whether `pam_exec` actually fires on a Qubes AppVM login, and runs after the
+  DispVM boot-time binds, must be confirmed by a real Qubes AppVM boot test before
+  this is relied on there.
+- The namespace guard only becomes FUNCTIONAL once pam_namespace is active AND
+  ordered to run EARLIER than this hook in the session stack -- otherwise the
+  namespace is not yet unshared when the hook runs and the exception is skipped
+  (fail-safe, but the browser gets no exec home). pam_namespace is not merged yet;
+  confirm the stack ordering when it ships. Until then the hook is a deliberate
+  no-op and `check_noexec` governs launch.
