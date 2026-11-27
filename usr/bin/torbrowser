@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -e
 
 ## Copyright (C) 2012 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -7,17 +7,38 @@
 #exec 1>/tmp/torbrowser.log
 #exec 2>/tmp/torbrowser.log
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
+## SC1091: the helper-scripts sources (pre.bsh, has.bsh, boot-session-detection,
+##   strings.bsh) resolve at runtime via HELPER_SCRIPTS_PATH; shellcheck cannot
+##   follow them from its isolated view.
+## SC2154: those sources set the ~50 globals below via default_if_empty, which
+##   shellcheck cannot see assigned; runtime 'set -o nounset' guards real unset use.
+## SC2034: tb_running_as_root is set by root_check but not read in this script.
+# shellcheck disable=SC1091,SC2154,SC2034
 
-if [ -z "${OLD_LC_ALL:-}" ]; then
-  OLD_LC_ALL="${LC_ALL:-}"
+## provides was_executed
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/check_runtime.bsh || true
+if ! declare -F was_executed >/dev/null; then
+   printf '%s\n' "$0: ERROR: cannot source check_runtime.bsh!" >&2
+   exit 1
 fi
-export LC_ALL=C
+
+## Strict mode only when EXECUTED, not when sourced: the dist-ai tb-starter-tests
+## suite sources this file to unit-test check_noexec_do and must not inherit
+## strict-mode ('set -o' is global and would leak into the test shell).
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
+
+   if [ -z "${OLD_LC_ALL:-}" ]; then
+      OLD_LC_ALL="${LC_ALL:-}"
+   fi
+   export LC_ALL=C
+fi
 
 if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
    # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/pre.bsh
@@ -149,8 +170,6 @@ For debugging, run:
    "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
    exit 1
 }
-
-trap tb_error_handler ERR
 
 tb_run_function() {
    case "${tb_skip_functions}" in
@@ -349,18 +368,27 @@ remount_exec() {
 }
 
 check_noexec_do() {
+   ## Returns 0 (success) when tb_home_folder is EXECUTABLE (not noexec), 1 when
+   ## it IS noexec. Both callers (remount_exec, check_noexec) treat success as
+   ## "no remount needed".
+   ## 'findmnt --target' resolves the mount COVERING tb_home_folder, so an
+   ## INHERITED noexec is detected even when ~/.tb is not its own mount line (a
+   ## fresh ~/.tb under a noexec /home -- the non-Qubes case the old
+   ## 'mount | grep <path>' missed). noexec is matched as an OPTIONS token
+   ## (',noexec,'), never as a substring of the path.
    ## example tb_home_folder:
    ## /home/user/.tb
-   tb_home_folder_mount="$(mount | grep -- "${tb_home_folder}")" || true
-   if [ ! "${tb_home_folder_mount}" = "" ]; then
-      if printf '%s\n' "${tb_home_folder}" | grep --invert-match -- "noexec" >/dev/null 2>/dev/null ; then
-         ## 'noexec' not found inside 'mount' line for tb_home_folder.
-         ## I.e. not mounted noexec.
-         true "INFO: noexec detected: no"
-         return 1
-      fi
+   if ! tb_home_folder_mount="$(findmnt --noheadings --output OPTIONS --target "${tb_home_folder}" 2>/dev/null)" ; then
+      true "INFO: noexec detected: no"
+      return 0
    fi
-   true "INFO: noexec detected: yes"
+   case ",${tb_home_folder_mount}," in
+      *",noexec,"*)
+         true "INFO: noexec detected: yes"
+         return 1
+         ;;
+   esac
+   true "INFO: noexec detected: no"
    return 0
 }
 
@@ -936,4 +964,9 @@ main_function() {
    tb_run_function tb_start_tor_browser "$@"
 }
 
-tb_run_function main_function "$@"
+## Only auto-run when executed, not when sourced (the tb-starter-tests suite
+## sources this file to unit-test check_noexec_do).
+if was_executed "${BASH_SOURCE[0]}"; then
+   trap tb_error_handler ERR
+   tb_run_function main_function "$@"
+fi
