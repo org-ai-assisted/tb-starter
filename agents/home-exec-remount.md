@@ -35,7 +35,11 @@ regardless of propagation type.
   `pam_exec`, priority 95) runs as the login session opens. It acts ONLY when the
   session's mount namespace is unshared from init (compares `/proc/self/ns/mnt` to
   `/proc/1/ns/mnt`) -- i.e. pam_namespace has already unshared it earlier in the
-  stack. Then the remount is session-local and visible to the browser. With
+  stack. It then makes the session tree slave (`mount --make-rslave /`) before the
+  remount, because an unshared namespace still inherits each mount's propagation
+  type -- with `/home` shared (systemd default) the exec remount would otherwise
+  propagate back to init and become system-wide. So locality is ENFORCED, not
+  assumed. The remount is then session-local and visible to the browser. With
   pam_namespace inactive (shared init namespace) it is a NO-OP, because a remount
   there would be system-wide and permanent (`pam_exec` close_session does not
   umount); `tb-starter`'s launch-time `check_noexec` (exit 5) is the fail-safe
