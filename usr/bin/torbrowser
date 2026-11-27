@@ -38,11 +38,15 @@ if was_executed "${BASH_SOURCE[0]}"; then
       OLD_LC_ALL="${LC_ALL:-}"
    fi
    export LC_ALL=C
-fi
 
-if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
-   # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/pre.bsh
-   source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/pre.bsh
+   ## pre.bsh installs an ERR/EXIT error handler that ends in 'exit 1'. Source it
+   ## ONLY when executed: a sourced consumer (the unit test) must not inherit that
+   ## trap, or a function's non-zero 'return' would terminate the caller instead
+   ## of being observable (strict mode is likewise execute-only, above).
+   if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
+      # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/pre.bsh
+      source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/pre.bsh
+   fi
 fi
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
@@ -370,17 +374,37 @@ remount_exec() {
 check_noexec_do() {
    ## Returns 0 (success) when tb_home_folder is EXECUTABLE (not noexec), 1 when
    ## it IS noexec. Both callers (remount_exec, check_noexec) treat success as
-   ## "no remount needed".
-   ## 'findmnt --target' resolves the mount COVERING tb_home_folder, so an
+   ## "no remount needed", so this FAILS SAFE: any uncertainty returns 1 (noexec)
+   ## to trigger the remount, never 0 (which would launch Tor Browser on a noexec
+   ## home -- the bug this guards).
+   ## 'findmnt --target' reports the mount COVERING tb_home_folder, so an
    ## INHERITED noexec is detected even when ~/.tb is not its own mount line (a
    ## fresh ~/.tb under a noexec /home -- the non-Qubes case the old
-   ## 'mount | grep <path>' missed). noexec is matched as an OPTIONS token
-   ## (',noexec,'), never as a substring of the path.
+   ## 'mount | grep <path>' missed). But findmnt needs an EXISTING path: it exits
+   ## non-zero on a missing one and silently judges '/' on an empty one. So
+   ## resolve the NEAREST EXISTING ANCESTOR first (~/.tb often does not exist yet
+   ## when this runs). noexec is matched as an OPTIONS token (',noexec,'), never
+   ## as a substring of the path.
    ## example tb_home_folder:
    ## /home/user/.tb
-   if ! tb_home_folder_mount="$(findmnt --noheadings --output OPTIONS --target "${tb_home_folder}" 2>/dev/null)" ; then
-      true "INFO: noexec detected: no"
-      return 0
+   local probe_path
+   ## A non-absolute (including empty) folder is a caller bug -- fail safe rather
+   ## than let findmnt judge '/' or parse a leading '-' as a flag.
+   case "${tb_home_folder}" in
+      /*)
+         ;;
+      *)
+         true "INFO: noexec detected: yes (tb_home_folder not absolute)"
+         return 1
+         ;;
+   esac
+   probe_path="${tb_home_folder}"
+   while [ ! -e "${probe_path}" ] && [ "${probe_path}" != "/" ]; do
+      probe_path="$(dirname -- "${probe_path}")"
+   done
+   if ! tb_home_folder_mount="$(findmnt --noheadings --output OPTIONS --target "${probe_path}" 2>/dev/null)" ; then
+      true "INFO: noexec detected: yes (findmnt could not resolve a mount)"
+      return 1
    fi
    case ",${tb_home_folder_mount}," in
       *",noexec,"*)
