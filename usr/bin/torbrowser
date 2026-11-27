@@ -357,26 +357,14 @@ More info: <a href=${tb_documentation_base_url_clearnet}/wiki/${tb_wiki}/Advance
    exit 1
 }
 
-remount_exec() {
-   if [ "${qubes_vm_persistence}" = "none" ]; then
-      true "${FUNCNAME[0]}: Not remounting exec in DispVM."
-      return 0
-   fi
-
-   if check_noexec_do ; then
-      true "INFO: tb_home_folder '${tb_home_folder}' is not mounted with noexec."
-      return 0
-   fi
-
-   leaprun tb-starter-remount-exec
-}
-
 check_noexec_do() {
    ## Returns 0 (success) when tb_home_folder is EXECUTABLE (not noexec), 1 when
-   ## it IS noexec. Both callers (remount_exec, check_noexec) treat success as
-   ## "no remount needed", so this FAILS SAFE: any uncertainty returns 1 (noexec)
-   ## to trigger the remount, never 0 (which would launch Tor Browser on a noexec
-   ## home -- the bug this guards).
+   ## it IS noexec. check_noexec (the launch-time safety gate) treats success as
+   ## "exec, OK to launch", so this FAILS SAFE: any uncertainty returns 1 (noexec)
+   ## to block the launch, never 0 (which would launch Tor Browser on a noexec
+   ## home -- the bug this guards). The exec-remount itself is applied earlier, at
+   ## login by tb-updater's PAM hook (tb-home-remount-exec) and at boot in Qubes
+   ## DispVMs (tb-updater-dispvm.service); this is only the final verification.
    ## 'findmnt --target' reports the mount COVERING tb_home_folder, so an
    ## INHERITED noexec is detected even when ~/.tb is not its own mount line (a
    ## fresh ~/.tb under a noexec /home -- the non-Qubes case the old
@@ -975,7 +963,6 @@ main_function() {
    tb_run_function check_tb_updater_first_boot_done "$@"
    tb_run_function tb_copy_from_root_to_user_maybe "$@"
    tb_run_function maybe_install_tor_browser "$@"
-   tb_run_function remount_exec "$@"
    tb_run_function check_noexec "$@"
    tb_run_function tb_folder_permission_check "$@"
    tb_run_function tb_folder_change_directory "$@"

@@ -1,4 +1,4 @@
-# Tor Browser home exec-remount: approaches A vs B
+# Tor Browser home exec-remount
 
 ## Problem
 
@@ -6,25 +6,8 @@ security-misc mounts `/home` `noexec` (remount-secure, level 2-3). Tor Browser
 must execute binaries under its home (`~/.tb`, `~/.cache/tb`), so something must
 re-add `exec` to just those directories without weakening the rest of `/home`.
 
-Two mechanisms exist in the tree. They differ in the ONE property that decides
-whether the browser ever sees the exec bit: the mount namespace the remount lands
-in.
-
-## A -- tb-updater, PAM session (`usr/libexec/tb-updater/tb-home-remount-exec`)
-
-- Runs from a PAM session hook (`usr/share/pam-configs/tb-home-exec`, `pam_exec`,
-  `Session-Interactive-Only`, optional, priority 95) as the login session opens.
-- The bind-remount therefore happens INSIDE the user's login-session mount
-  namespace -- the same namespace the browser runs in -- so it is always visible
-  to the browser.
-
-## B -- tb-starter, launch time (`usr/libexec/tb-starter/remount-exec`)
-
-- `usr/bin/torbrowser` calls `check_noexec_do` at launch and, if the home is
-  `noexec`, runs `leaprun tb-starter-remount-exec` -> `remount-exec` as root via
-  privleap.
-- That root process lives in privleapd's init mount namespace, NOT the caller's
-  login-session namespace, so its bind-remount lands in the init namespace.
+The property that decides whether the browser ever sees the exec bit is the mount
+namespace the remount lands in.
 
 ## Decisive fact: pam_namespace
 
@@ -32,33 +15,51 @@ security-misc's pam_namespace gives each interactive login its OWN unshared moun
 namespace (it polyinstantiates `/tmp`, `/var/tmp`, `/dev/shm`). A mount made in
 the init namespace AFTER that unshare is not visible inside the session namespace.
 
-Empirically confirmed on a pam_namespace host (sandbox e2e): B's exact two `mount`
-commands, run as root in the init namespace, do NOT appear inside the login
-session's namespace. So on any pam_namespace system B cannot deliver exec to the
-browser; A can, because it runs in-session by construction.
+Empirically confirmed on a pam_namespace host (sandbox e2e): a bind-remount run as
+root in the init namespace does NOT appear inside a login session's namespace. So
+the exec-remount MUST run in-session, or the browser (which runs in the session
+namespace) never sees it.
 
-Blast radius is NOT the differentiator: B is already hardcoded to
-`/home/user/.tb`, so both approaches are narrow (one account, the `.tb` tree). No
-amount of blast-radius scoping makes an init-namespace mount appear in a session
-namespace -- only running in-session does.
+## Current design -- one mechanism, in-session
+
+- Shared core: `tb-updater`'s `usr/libexec/tb-updater/tb-remount-exec.bsh`
+  (symlink guard, ownership prep, per-directory noexec->exec remount). Sourced by
+  both triggers below; no second copy.
+- Non-Qubes and Qubes persistent: `tb-updater`'s PAM session hook
+  `usr/libexec/tb-updater/tb-home-remount-exec` (`usr/share/pam-configs/tb-home-exec`,
+  `pam_exec`, priority 95) runs as the login session opens, INSIDE the session's
+  mount namespace, so the remount is visible to the browser by construction.
+- Qubes DispVM: `tb-updater-dispvm.service` runs the DispVM data layout at boot
+  (binding the read-only `/var/cache/tb-binary` cache into the home, `/rw/home`),
+  using the same shared helper for the exec step. Lives in tb-updater because it
+  provisions the tb-updater-managed binary cache, not because it launches.
+- `tb-starter`'s `usr/bin/torbrowser` keeps only `check_noexec` -- the launch-time
+  verification that FAILS the launch (exit 5) if the home is still `noexec`. It no
+  longer performs a remount.
+
+## Retired: launch-time init-namespace remount
+
+The previous `tb-starter` path (`usr/libexec/tb-starter/remount-exec`, run as root
+at browser launch via privleap) bind-remounted in privleapd's init namespace. On a
+pam_namespace host that mount is invisible to the browser's session namespace, so
+it could not deliver exec. Blast radius was not the issue -- it was already
+hardcoded to `/home/user/.tb`; the namespace was. It has been removed, along with
+its privleap action and sudoers grant; `tb-starter` now `Depends` on `tb-updater`.
 
 ## Comparison
 
-| Dimension | A -- tb-updater, PAM session | B -- tb-starter, launch time |
+| Dimension | A -- tb-updater, PAM session (chosen) | B -- tb-starter, launch time (retired) |
 |---|---|---|
 | Where the remount runs | User's login-session mount ns (`pam_exec` at session open) | root in privleapd's init mount ns (`leaprun`) |
-| Works with pam_namespace | Yes -- mount is in the browser's own session ns, by construction | No (e2e-confirmed) -- init-ns mount is invisible in the unshared session ns |
-| Trigger / timing | At login, once | At browser launch, on demand (`check_noexec_do`) |
+| Visible to the browser under pam_namespace | Yes -- same session ns, by construction | No (e2e-confirmed) -- init-ns mount invisible in the session ns |
+| Trigger / timing | At login, once (plus Qubes DispVM at boot) | At browser launch, on demand |
 | Privilege | PAM session (root while the session opens) | root via privleap + sudoers |
-| Account scope | `tb_home_exec_user` (default `user`); exits if `PAM_USER` differs | Hardcoded `/home/user/.tb` -- already `user`-only |
-| Dirs made exec | `~/.tb` and `~/.cache/tb` | `~/.tb` only (+ `/var/cache/tb-binary/.tb` on Qubes TemplateVM) |
-| Qubes | Exits early (`/run/qubes`) -- not used | Supported (TemplateVM path) |
-| Safety guards | Symlink refusal, chown, `mkdir -p`, noexec-gated | noexec-gated (`mount \| grep noexec`) |
+| Account scope | `tb_home_exec_user` (default `user`) | Hardcoded `/home/user/.tb` |
+| Dirs made exec | `~/.tb` and `~/.cache/tb` | `~/.tb` only |
 
-## Direction
+## Caveat still to verify
 
-Unify on A. B's launch-time init-namespace remount cannot reach a pam_namespace
-session regardless of tuning; A is pam_namespace-correct and already covers the
-non-Qubes case. The remaining work is to re-wire A (or an A-shaped equivalent) for
-the one case B uniquely handles (the Qubes TemplateVM binary-cache dir), then
-retire B's remount path.
+A's PAM hook now also covers Qubes (the `/run/qubes` early-exit was removed).
+Whether `pam_exec` actually fires on a Qubes AppVM login, and runs after the
+DispVM boot-time binds, must be confirmed by a real Qubes AppVM boot test before
+this is relied on there.
