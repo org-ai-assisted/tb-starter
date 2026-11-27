@@ -3,3 +3,4 @@
 
 rm_conffile /etc/torbrowser.d/30_torbrowser_default
 rm_conffile /etc/privleap/conf.d/tb-starter.conf
+rm_conffile /etc/sudoers.d/tb-starter

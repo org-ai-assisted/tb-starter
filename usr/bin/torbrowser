@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -e
 
 ## Copyright (C) 2012 - 2025 ENCRYPTED SUPPORT LLC <adrelanos@whonix.org>
 ## See the file COPYING for copying conditions.
@@ -7,21 +7,46 @@
 #exec 1>/tmp/torbrowser.log
 #exec 2>/tmp/torbrowser.log
 
-set -o errexit
-set -o nounset
-set -o pipefail
-set -o errtrace
-shopt -s inherit_errexit
-shopt -s shift_verbose
+## SC1091: the helper-scripts sources (pre.bsh, has.bsh, boot-session-detection,
+##   strings.bsh) resolve at runtime via HELPER_SCRIPTS_PATH; shellcheck cannot
+##   follow them from its isolated view.
+## SC2154: those sources set the ~50 globals below via default_if_empty, which
+##   shellcheck cannot see assigned; runtime 'set -o nounset' guards real unset use.
+## SC2034: tb_running_as_root is set by root_check but not read in this script.
+# shellcheck disable=SC1091,SC2154,SC2034
 
-if [ -z "${OLD_LC_ALL:-}" ]; then
-  OLD_LC_ALL="${LC_ALL:-}"
+## provides was_executed
+# shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/check_runtime.bsh
+source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/check_runtime.bsh || true
+if ! declare -F was_executed >/dev/null; then
+   printf '%s\n' "$0: ERROR: cannot source check_runtime.bsh!" >&2
+   exit 1
 fi
-export LC_ALL=C
 
-if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
-   # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/pre.bsh
-   source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/pre.bsh
+## Strict mode only when EXECUTED, not when sourced: the dist-ai tb-starter-tests
+## suite sources this file to unit-test check_noexec_do and must not inherit
+## strict-mode ('set -o' is global and would leak into the test shell).
+if was_executed "${BASH_SOURCE[0]}"; then
+   set -o errexit
+   set -o nounset
+   set -o pipefail
+   set -o errtrace
+   shopt -s inherit_errexit
+   shopt -s shift_verbose
+
+   if [ -z "${OLD_LC_ALL:-}" ]; then
+      OLD_LC_ALL="${LC_ALL:-}"
+   fi
+   export LC_ALL=C
+
+   ## pre.bsh installs an ERR/EXIT error handler that ends in 'exit 1'. Source it
+   ## ONLY when executed: a sourced consumer (the unit test) must not inherit that
+   ## trap, or a function's non-zero 'return' would terminate the caller instead
+   ## of being observable (strict mode is likewise execute-only, above).
+   if [ -f /usr/libexec/helper-scripts/pre.bsh ]; then
+      # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/pre.bsh
+      source "${HELPER_SCRIPTS_PATH:-}"/usr/libexec/helper-scripts/pre.bsh
+   fi
 fi
 
 # shellcheck source=../../../helper-scripts/usr/libexec/helper-scripts/has.bsh
@@ -149,8 +174,6 @@ For debugging, run:
    "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
    exit 1
 }
-
-trap tb_error_handler ERR
 
 tb_run_function() {
    case "${tb_skip_functions}" in
@@ -334,33 +357,50 @@ More info: <a href=${tb_documentation_base_url_clearnet}/wiki/${tb_wiki}/Advance
    exit 1
 }
 
-remount_exec() {
-   if [ "${qubes_vm_persistence}" = "none" ]; then
-      true "${FUNCNAME[0]}: Not remounting exec in DispVM."
-      return 0
-   fi
-
-   if check_noexec_do ; then
-      true "INFO: tb_home_folder '${tb_home_folder}' is not mounted with noexec."
-      return 0
-   fi
-
-   leaprun tb-starter-remount-exec
-}
-
 check_noexec_do() {
+   ## Returns 0 (success) when tb_home_folder is EXECUTABLE (not noexec), 1 when
+   ## it IS noexec. check_noexec (the launch-time safety gate) treats success as
+   ## "exec, OK to launch", so this FAILS SAFE: any uncertainty returns 1 (noexec)
+   ## to block the launch, never 0 (which would launch Tor Browser on a noexec
+   ## home -- the bug this guards). The exec-remount itself is applied earlier, at
+   ## login by tb-updater's PAM hook (tb-home-remount-exec) and at boot in Qubes
+   ## DispVMs (tb-updater-dispvm.service); this is only the final verification.
+   ## 'findmnt --target' reports the mount COVERING tb_home_folder, so an
+   ## INHERITED noexec is detected even when ~/.tb is not its own mount line (a
+   ## fresh ~/.tb under a noexec /home -- the non-Qubes case the old
+   ## 'mount | grep <path>' missed). But findmnt needs an EXISTING path: it exits
+   ## non-zero on a missing one and silently judges '/' on an empty one. So
+   ## resolve the NEAREST EXISTING ANCESTOR first (~/.tb often does not exist yet
+   ## when this runs). noexec is matched as an OPTIONS token (',noexec,'), never
+   ## as a substring of the path.
    ## example tb_home_folder:
    ## /home/user/.tb
-   tb_home_folder_mount="$(mount | grep -- "${tb_home_folder}")" || true
-   if [ ! "${tb_home_folder_mount}" = "" ]; then
-      if printf '%s\n' "${tb_home_folder}" | grep --invert-match -- "noexec" >/dev/null 2>/dev/null ; then
-         ## 'noexec' not found inside 'mount' line for tb_home_folder.
-         ## I.e. not mounted noexec.
-         true "INFO: noexec detected: no"
+   local probe_path
+   ## A non-absolute (including empty) folder is a caller bug -- fail safe rather
+   ## than let findmnt judge '/' or parse a leading '-' as a flag.
+   case "${tb_home_folder}" in
+      /*)
+         ;;
+      *)
+         true "INFO: noexec detected: yes (tb_home_folder not absolute)"
          return 1
-      fi
+         ;;
+   esac
+   probe_path="${tb_home_folder}"
+   while [ ! -e "${probe_path}" ] && [ "${probe_path}" != "/" ]; do
+      probe_path="$(dirname -- "${probe_path}")"
+   done
+   if ! tb_home_folder_mount="$(findmnt --noheadings --output OPTIONS --target "${probe_path}" 2>/dev/null)" ; then
+      true "INFO: noexec detected: yes (findmnt could not resolve a mount)"
+      return 1
    fi
-   true "INFO: noexec detected: yes"
+   case ",${tb_home_folder_mount}," in
+      *",noexec,"*)
+         true "INFO: noexec detected: yes"
+         return 1
+         ;;
+   esac
+   true "INFO: noexec detected: no"
    return 0
 }
 
@@ -370,31 +410,25 @@ check_noexec() {
       return 0
    fi
 
-   ## example tb_user_home:
-   ## /home/user
-   ##
-   ## example tb_user_home:
-   ## /var/cache/tb-binary
-   ##
-   ## example tb_user_home_dirname:
-   ## /var/cache
-   ##
-   ## example tb_user_home_dirname:
-   ## /home
-   if mount | grep -- "${tb_user_home_dirname}" | grep -- "noexec" >/dev/null 2>/dev/null; then
-      local MSG="<p>Failed to start ${tb_title}!<br></br>
+   ## check_noexec_do returned non-zero: tb_home_folder is noexec, OR could not be
+   ## proven exec (it fails safe). This is the launch-time backstop, so block
+   ## UNCONDITIONALLY -- do NOT re-gate on 'mount | grep <dirname> | grep noexec'.
+   ## That literal match misses an INHERITED noexec (tb_home_folder resolving onto
+   ## a noexec parent with no literal '/home ... noexec' mount line), which is
+   ## exactly the case check_noexec_do's 'findmnt --target' detects; gating on it
+   ## let Tor Browser launch on a noexec home.
+   local MSG="<p>Failed to start ${tb_title}!<br></br>
 <br></br>
-<code>${tb_user_home_dirname}</code> is mounted with <code>noexec</code>.
+<code>${tb_user_home_dirname}</code> resolves onto a <code>noexec</code> mount.
 <br></br>
 <br></br>Debugging information:
 <br></br>
 <br></br>tb_user_home_dirname: <code>${tb_user_home_dirname}</code>
 <br></br>tb_home_folder_mount: <code>${tb_home_folder_mount}</code>
 </p>"
-      "${output}" "${output_opts[@]}" --messagex --typex "error" --titlex "${TITLE}" --message "${MSG}" --done
-      "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
-      exit 5
-   fi
+   "${output}" "${output_opts[@]}" --messagex --typex "error" --titlex "${TITLE}" --message "${MSG}" --done
+   "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
+   exit 5
 }
 
 check_tb_updater_first_boot_done() {
@@ -923,7 +957,6 @@ main_function() {
    tb_run_function check_tb_updater_first_boot_done "$@"
    tb_run_function tb_copy_from_root_to_user_maybe "$@"
    tb_run_function maybe_install_tor_browser "$@"
-   tb_run_function remount_exec "$@"
    tb_run_function check_noexec "$@"
    tb_run_function tb_folder_permission_check "$@"
    tb_run_function tb_folder_change_directory "$@"
@@ -936,4 +969,9 @@ main_function() {
    tb_run_function tb_start_tor_browser "$@"
 }
 
-tb_run_function main_function "$@"
+## Only auto-run when executed, not when sourced (the tb-starter-tests suite
+## sources this file to unit-test check_noexec_do).
+if was_executed "${BASH_SOURCE[0]}"; then
+   trap tb_error_handler ERR
+   tb_run_function main_function "$@"
+fi
