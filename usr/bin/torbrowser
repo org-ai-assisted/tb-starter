@@ -410,31 +410,25 @@ check_noexec() {
       return 0
    fi
 
-   ## example tb_user_home:
-   ## /home/user
-   ##
-   ## example tb_user_home:
-   ## /var/cache/tb-binary
-   ##
-   ## example tb_user_home_dirname:
-   ## /var/cache
-   ##
-   ## example tb_user_home_dirname:
-   ## /home
-   if mount | grep -- "${tb_user_home_dirname}" | grep -- "noexec" >/dev/null 2>/dev/null; then
-      local MSG="<p>Failed to start ${tb_title}!<br></br>
+   ## check_noexec_do returned non-zero: tb_home_folder is noexec, OR could not be
+   ## proven exec (it fails safe). This is the launch-time backstop, so block
+   ## UNCONDITIONALLY -- do NOT re-gate on 'mount | grep <dirname> | grep noexec'.
+   ## That literal match misses an INHERITED noexec (tb_home_folder resolving onto
+   ## a noexec parent with no literal '/home ... noexec' mount line), which is
+   ## exactly the case check_noexec_do's 'findmnt --target' detects; gating on it
+   ## let Tor Browser launch on a noexec home.
+   local MSG="<p>Failed to start ${tb_title}!<br></br>
 <br></br>
-<code>${tb_user_home_dirname}</code> is mounted with <code>noexec</code>.
+<code>${tb_user_home_dirname}</code> resolves onto a <code>noexec</code> mount.
 <br></br>
 <br></br>Debugging information:
 <br></br>
 <br></br>tb_user_home_dirname: <code>${tb_user_home_dirname}</code>
 <br></br>tb_home_folder_mount: <code>${tb_home_folder_mount}</code>
 </p>"
-      "${output}" "${output_opts[@]}" --messagex --typex "error" --titlex "${TITLE}" --message "${MSG}" --done
-      "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
-      exit 5
-   fi
+   "${output}" "${output_opts[@]}" --messagex --typex "error" --titlex "${TITLE}" --message "${MSG}" --done
+   "${output}" "${output_opts[@]}" --messagecli --typecli "error" --titlecli "${TITLE}" --message "${MSG}" --done
+   exit 5
 }
 
 check_tb_updater_first_boot_done() {

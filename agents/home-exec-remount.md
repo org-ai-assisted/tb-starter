@@ -12,13 +12,18 @@ namespace the remount lands in.
 ## Decisive fact: pam_namespace
 
 security-misc's pam_namespace gives each interactive login its OWN unshared mount
-namespace (it polyinstantiates `/tmp`, `/var/tmp`, `/dev/shm`). A mount made in
-the init namespace AFTER that unshare is not visible inside the session namespace.
+namespace (it polyinstantiates `/tmp`, `/var/tmp`, `/dev/shm`). Whether a mount
+made in the init namespace AFTER that unshare reaches the session namespace
+depends on the propagation type of the target mount: with a private or slave
+home mount it does NOT propagate in, so the browser never sees it.
 
-Empirically confirmed on a pam_namespace host (sandbox e2e): a bind-remount run as
-root in the init namespace does NOT appear inside a login session's namespace. So
-the exec-remount MUST run in-session, or the browser (which runs in the session
-namespace) never sees it.
+Empirically confirmed on the tested host (sandbox e2e, default propagation): a
+bind-remount run as root in the init namespace did NOT appear inside a login
+session's namespace. A shared (`MS_SHARED`) home mount could propagate it in, so
+B's visibility is config-dependent -- check the `/home` propagation type per
+target before relying on it. That config-dependence is exactly why A is preferred:
+running the remount IN-session makes it visible to the browser unconditionally,
+regardless of propagation type.
 
 ## Current design -- one mechanism, in-session
 
@@ -41,8 +46,9 @@ namespace) never sees it.
 
 The previous `tb-starter` path (`usr/libexec/tb-starter/remount-exec`, run as root
 at browser launch via privleap) bind-remounted in privleapd's init namespace. On a
-pam_namespace host that mount is invisible to the browser's session namespace, so
-it could not deliver exec. Blast radius was not the issue -- it was already
+pam_namespace host that mount can be invisible to the browser's session namespace
+(propagation-dependent), so it could not reliably deliver exec. Blast radius was
+not the issue -- it was already
 hardcoded to `/home/user/.tb`; the namespace was. It has been removed, along with
 its privleap action and sudoers grant; `tb-starter` now `Depends` on `tb-updater`.
 
@@ -51,7 +57,7 @@ its privleap action and sudoers grant; `tb-starter` now `Depends` on `tb-updater
 | Dimension | A -- tb-updater, PAM session (chosen) | B -- tb-starter, launch time (retired) |
 |---|---|---|
 | Where the remount runs | User's login-session mount ns (`pam_exec` at session open) | root in privleapd's init mount ns (`leaprun`) |
-| Visible to the browser under pam_namespace | Yes -- same session ns, by construction | No (e2e-confirmed) -- init-ns mount invisible in the session ns |
+| Visible to the browser under pam_namespace | Yes -- same session ns, by construction | Not reliably -- e2e-invisible on the tested host; depends on the home mount's propagation type |
 | Trigger / timing | At login, once (plus Qubes DispVM at boot) | At browser launch, on demand |
 | Privilege | PAM session (root while the session opens) | root via privleap + sudoers |
 | Account scope | `tb_home_exec_user` (default `user`) | Hardcoded `/home/user/.tb` |
